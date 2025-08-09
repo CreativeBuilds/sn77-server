@@ -43,6 +43,8 @@ export interface SubgraphPosition {
 }
 
 export interface LiquidityPosition extends SubgraphPosition {
+    currentToken0?: string;
+    currentToken1?: string;
     usdValue?: {
         token0Value: number;
         token1Value: number;
@@ -55,6 +57,77 @@ export interface LiquidityPosition extends SubgraphPosition {
 // By default, search all pools that have been voted on.
 // This will be populated from the database.
 const DEFAULT_POOLS: string[] = [];
+
+/**
+ * Calculate current token amounts in a Uniswap V3 position
+ * Based on the liquidity and current tick
+ */
+function calculateCurrentTokenAmounts(
+    liquidity: string,
+    currentTick: string,
+    tickLower: string,
+    tickUpper: string,
+    token0Decimals: string,
+    token1Decimals: string
+): [string, string] {
+    const L = parseFloat(liquidity);
+    const tickCurrent = parseInt(currentTick);
+    const tickLowerInt = parseInt(tickLower);
+    const tickUpperInt = parseInt(tickUpper);
+    
+    const decimals0 = parseInt(token0Decimals);
+    const decimals1 = parseInt(token1Decimals);
+    
+    // Calculate sqrt prices
+    const sqrtPriceCurrent = Math.pow(1.0001, tickCurrent / 2);
+    const sqrtPriceLower = Math.pow(1.0001, tickLowerInt / 2);
+    const sqrtPriceUpper = Math.pow(1.0001, tickUpperInt / 2);
+    
+    let amount0 = 0;
+    let amount1 = 0;
+    
+    if (tickCurrent < tickLowerInt) {
+        // Position is entirely in token0
+        amount0 = L * (sqrtPriceUpper - sqrtPriceLower) / (sqrtPriceUpper * sqrtPriceLower);
+        amount1 = 0;
+    } else if (tickCurrent >= tickUpperInt) {
+        // Position is entirely in token1
+        amount0 = 0;
+        amount1 = L * (sqrtPriceUpper - sqrtPriceLower);
+    } else {
+        // Position spans the current price
+        amount0 = L * (sqrtPriceUpper - sqrtPriceCurrent) / (sqrtPriceUpper * sqrtPriceCurrent);
+        amount1 = L * (sqrtPriceCurrent - sqrtPriceLower);
+    }
+    
+    // Convert to proper decimal places
+    const amount0Formatted = (amount0 / Math.pow(10, decimals0)).toFixed(decimals0);
+    const amount1Formatted = (amount1 / Math.pow(10, decimals1)).toFixed(decimals1);
+    
+    return [amount0Formatted, amount1Formatted];
+}
+
+/**
+ * Enhance positions with current token amounts
+ */
+function enhancePositionsWithCurrentAmounts(positions: SubgraphPosition[]): LiquidityPosition[] {
+    return positions.map(position => {
+        const [currentToken0, currentToken1] = calculateCurrentTokenAmounts(
+            position.liquidity,
+            position.pool.tick,
+            position.tickLower.tickIdx,
+            position.tickUpper.tickIdx,
+            position.token0.decimals,
+            position.token1.decimals
+        );
+        
+        return {
+            ...position,
+            currentToken0,
+            currentToken1
+        };
+    });
+}
 
 /**
  * Fetch liquidity positions for the given miners from the Uniswap-V3 subgraph.
@@ -100,6 +173,11 @@ export async function getMinerLiquidityPositions(minerAddresses: Record<string, 
         }
     }
 
+    // Enhance positions with current amounts
+    for (const [uid, positions] of Object.entries(out)) {
+        out[uid] = enhancePositionsWithCurrentAmounts(positions);
+    }
+
     // ensure every miner key exists
     for (const uid of Object.keys(minerAddresses)) if (!out[uid]) out[uid] = [];
     return [out, null];
@@ -134,11 +212,12 @@ export async function enhancePositionsWithUSDValues(positionsByMiner: Record<str
                 const token0Price = tokenPrices[position.token0.id.toLowerCase()]?.usd || 0;
                 const token1Price = tokenPrices[position.token1.id.toLowerCase()]?.usd || 0;
                 
-                const deposited0 = parseFloat(position.depositedToken0);
-                const deposited1 = parseFloat(position.depositedToken1);
+                // Use current token amounts instead of deposited amounts
+                const current0 = parseFloat(position.currentToken0 || position.depositedToken0);
+                const current1 = parseFloat(position.currentToken1 || position.depositedToken1);
                 
-                const token0Value = deposited0 * token0Price;
-                const token1Value = deposited1 * token1Price;
+                const token0Value = current0 * token0Price;
+                const token1Value = current1 * token1Price;
                 const totalValue = token0Value + token1Value;
 
                 return {

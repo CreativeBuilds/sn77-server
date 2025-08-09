@@ -5,7 +5,7 @@ import { ApiPromise } from '@polkadot/api';
 import { initBittensorConnection } from './bittensorUtils';
 import { u128 } from '@polkadot/types/primitive';
 
-export const HOLDERS_CACHE_TTL_MS = 1 * 60 * 1000; // 1 minute
+export const HOLDERS_CACHE_TTL_MS = 5 * 60 * 1000; // 1 minute
 const HOLDERS_REFRESH_CHECK_INTERVAL_MS = 60 * 1000; // 1 minute
 
 let holdersCache: { data: any; lastUpdated: number } = { data: null, lastUpdated: 0 };
