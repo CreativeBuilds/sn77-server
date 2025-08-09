@@ -178,10 +178,24 @@ export const refreshHoldersCacheIfNeeded = async (): Promise<void> => {
     }
 };
 
+let holdersRefreshTimer: NodeJS.Timeout | null = null;
+
 export const startPeriodicHoldersRefresh = (): void => {
-    setInterval(async () => {
-        try { await refreshHoldersCacheIfNeeded(); } catch (err) { console.error(err); }
+    if (holdersRefreshTimer) clearInterval(holdersRefreshTimer);
+    holdersRefreshTimer = setInterval(async () => {
+        try {
+            await refreshHoldersCacheIfNeeded();
+        } catch (error) {
+            console.error('Error refreshing holders cache:', error);
+        }
     }, HOLDERS_REFRESH_CHECK_INTERVAL_MS);
+};
+
+export const stopPeriodicHoldersRefresh = (): void => {
+    if (holdersRefreshTimer) {
+        clearInterval(holdersRefreshTimer);
+        holdersRefreshTimer = null;
+    }
 };
 
 export const getHolders = () => holdersCache.data; 

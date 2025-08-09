@@ -68,10 +68,24 @@ export const refreshSubnetHotkeysIfNeeded = async (netuid = 77): Promise<void> =
     }
 };
 
+let hotkeysRefreshTimer: NodeJS.Timeout | null = null;
+
 export const startPeriodicSubnetHotkeysRefresh = (netuid = 77): void => {
-    setInterval(async () => {
-        try { await refreshSubnetHotkeysIfNeeded(netuid); } catch (err) { console.error(err); }
-    }, 60_000); // check every minute
+    if (hotkeysRefreshTimer) clearInterval(hotkeysRefreshTimer);
+    hotkeysRefreshTimer = setInterval(async () => {
+        try {
+            await refreshSubnetHotkeysIfNeeded(netuid);
+        } catch (error) {
+            console.error('Error refreshing subnet hotkeys:', error);
+        }
+    }, 60000);
+};
+
+export const stopPeriodicSubnetHotkeysRefresh = (): void => {
+    if (hotkeysRefreshTimer) {
+        clearInterval(hotkeysRefreshTimer);
+        hotkeysRefreshTimer = null;
+    }
 };
 
 // Add retry configuration constants

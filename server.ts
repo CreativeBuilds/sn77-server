@@ -3,7 +3,7 @@ import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 import { ethers } from 'ethers';
 import { fetchCurrentBittensorBlock, closeBittensorConnection } from './utils/bittensorUtils';
-import { initializeSubnetHotkeysCache, startPeriodicSubnetHotkeysRefresh, getSubnetHotkeys } from './utils/bittensorUtils';
+import { initializeSubnetHotkeysCache, startPeriodicSubnetHotkeysRefresh, stopPeriodicSubnetHotkeysRefresh, getSubnetHotkeys } from './utils/bittensorUtils';
 import { readFileSync } from 'fs';
 
 // Shared utils
@@ -11,7 +11,7 @@ import { sanitizeError } from './utils/errorUtils';
 import { checkRateLimit, getClientIP } from './utils/rateLimitUtils';
 import { validateBasicInput, normalizeWeights } from './utils/validationUtils';
 import { verifySignature, verifyEthereumSignature } from './utils/signatureUtils';
-import { initializeHoldersCache, startPeriodicHoldersRefresh, getHolders } from './utils/holdersUtils';
+import { initializeHoldersCache, startPeriodicHoldersRefresh, stopPeriodicHoldersRefresh, getHolders } from './utils/holdersUtils';
 import { getAddressMapping, setAddressMapping, upsertUserVotes, getUserVotes, getPoolInfo, getAllPoolAddresses } from './utils/dbUtils';
 import { validateUniswapV3Pools } from './utils/poolValidationUtils';
 import { validateAndStorePoolInfo, getOrFetchPoolInfo } from './utils/enhancedPoolUtils';
@@ -20,6 +20,19 @@ import { getMinerLiquidityPositions, LiquidityPosition } from './utils/uniswapUt
 // Rate limiting storage
 const ipRequestCounts = new Map<string, { count: number; resetTime: number }>();
 const addressRequestCounts = new Map<string, { count: number; resetTime: number }>();
+
+// Rate limiting cleanup
+setInterval(() => {
+    const now = Date.now();
+    
+    for (const [ip, data] of ipRequestCounts.entries()) {
+        if (now > data.resetTime) ipRequestCounts.delete(ip);
+    }
+    
+    for (const [address, data] of addressRequestCounts.entries()) {
+        if (now > data.resetTime) addressRequestCounts.delete(address);
+    }
+}, 5 * 60 * 1000); // Clean every 5 minutes
 
 // Rate limiting configuration
 const MAX_REQUESTS_PER_IP = 30; // 30 requests per minute per IP
@@ -1347,12 +1360,16 @@ const startServer = async (): Promise<void> => {
 process.on('SIGINT', async () => {
     console.log('Shutting down server...');
     await closeBittensorConnection();
+    stopPeriodicSubnetHotkeysRefresh();
+    stopPeriodicHoldersRefresh();
     process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
     console.log('Shutting down server...');
     await closeBittensorConnection();
+    stopPeriodicSubnetHotkeysRefresh();
+    stopPeriodicHoldersRefresh();
     process.exit(0);
 });
 
