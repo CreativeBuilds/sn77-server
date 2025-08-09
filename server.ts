@@ -15,7 +15,7 @@ import { initializeHoldersCache, startPeriodicHoldersRefresh, stopPeriodicHolder
 import { getAddressMapping, setAddressMapping, upsertUserVotes, getUserVotes, getPoolInfo, getAllPoolAddresses } from './utils/dbUtils';
 import { validateUniswapV3Pools } from './utils/poolValidationUtils';
 import { validateAndStorePoolInfo, getOrFetchPoolInfo } from './utils/enhancedPoolUtils';
-import { getMinerLiquidityPositions, LiquidityPosition } from './utils/uniswapUtils';
+import { getMinerLiquidityPositions, LiquidityPosition, enhancePositionsWithUSDValues } from './utils/uniswapUtils';
 
 // Rate limiting storage
 const ipRequestCounts = new Map<string, { count: number; resetTime: number }>();
@@ -321,7 +321,16 @@ async function getMinerPositions(db: any): Promise<[Record<string, LiquidityPosi
             filteredPositions[minerId] = (fetchedPositions[minerId] || []).filter(position => isValidPosition(position));
         }
 
-        positionsByMiner = filteredPositions;
+        // Enhance positions with USD values
+        const [enhancedPositions, usdErr] = await enhancePositionsWithUSDValues(filteredPositions);
+        if (usdErr) {
+            console.warn(`Failed to enhance positions with USD values: ${usdErr}`);
+            // Continue with positions without USD values rather than failing
+            positionsByMiner = filteredPositions;
+        } else {
+            positionsByMiner = enhancedPositions;
+        }
+        
         liquidityPositionsCache = { data: positionsByMiner, lastUpdated: Date.now() };
         fromCache = false;
     }
@@ -488,7 +497,7 @@ const app = new Elysia()
                 {
                     path: "/positions",
                     method: "GET",
-                    description: "Retrieves all active Uniswap v3 liquidity positions for all miners with a linked Ethereum address. Results are cached for 5 minutes. Can be filtered by `hotkey` and/or `pool`. Inactive liquidity positions (positions where current tick is outside the position's bounds) are automatically filtered out.",
+                    description: "Retrieves all active Uniswap v3 liquidity positions for all miners with a linked Ethereum address. Results are cached for 5 minutes. Can be filtered by `hotkey` and/or `pool`. Inactive liquidity positions (positions where current tick is outside the position's bounds) are automatically filtered out. Includes USD values for each position calculated using CoinGecko price data.",
                     inputs: {
                         query: {
                             hotkey: "string (optional miner hotkey to filter by)",
@@ -497,7 +506,7 @@ const app = new Elysia()
                     },
                     outputs: {
                         success: "boolean",
-                        positions: "Record<string, (LiquidityPosition & { emission: number })[]> (map of miner hotkey to their liquidity positions with emission)",
+                        positions: "Record<string, (LiquidityPosition & { emission: number, usdValue?: { token0Value: number, token1Value: number, totalValue: number, token0Price: number, token1Price: number } })[]> (map of miner hotkey to their liquidity positions with emission and USD values)",
                         cached: "boolean (true if the response is from cache)",
                         error: "string (description of error if success is false)"
                     }
@@ -505,7 +514,7 @@ const app = new Elysia()
                 {
                     path: "/positions/:minerHotkey",
                     method: "GET",
-                    description: "Retrieves all active Uniswap v3 liquidity positions for a specific miner with a linked Ethereum address. Results are cached for 5 minutes. Inactive liquidity positions (positions where current tick is outside the position's bounds) are automatically filtered out.",
+                    description: "Retrieves all active Uniswap v3 liquidity positions for a specific miner with a linked Ethereum address. Results are cached for 5 minutes. Inactive liquidity positions (positions where current tick is outside the position's bounds) are automatically filtered out. Includes USD values for each position calculated using CoinGecko price data.",
                     inputs: {
                         params: {
                             minerHotkey: "string (miner hotkey to filter by)"
@@ -513,7 +522,7 @@ const app = new Elysia()
                     },
                     outputs: {
                         success: "boolean",
-                        positions: "(LiquidityPosition & { emission: number })[] (array of liquidity positions with emission)",
+                        positions: "(LiquidityPosition & { emission: number, usdValue?: { token0Value: number, token1Value: number, totalValue: number, token0Price: number, token1Price: number } })[] (array of liquidity positions with emission and USD values)",
                         cached: "boolean (true if the response is from cache)",
                         error: "string (description of error if success is false)"
                     }

@@ -42,7 +42,15 @@ export interface SubgraphPosition {
     };
 }
 
-export type LiquidityPosition = SubgraphPosition;
+export interface LiquidityPosition extends SubgraphPosition {
+    usdValue?: {
+        token0Value: number;
+        token1Value: number;
+        totalValue: number;
+        token0Price: number;
+        token1Price: number;
+    };
+}
 
 // By default, search all pools that have been voted on.
 // This will be populated from the database.
@@ -95,4 +103,59 @@ export async function getMinerLiquidityPositions(minerAddresses: Record<string, 
     // ensure every miner key exists
     for (const uid of Object.keys(minerAddresses)) if (!out[uid]) out[uid] = [];
     return [out, null];
+}
+
+/**
+ * Enhance liquidity positions with USD values using CoinGecko data
+ */
+export async function enhancePositionsWithUSDValues(positionsByMiner: Record<string, LiquidityPosition[]>): Promise<[Record<string, LiquidityPosition[]>, Error | null]> {
+    try {
+        // Collect all unique token addresses
+        const tokenAddresses = new Set<string>();
+        for (const positions of Object.values(positionsByMiner)) {
+            for (const position of positions) {
+                tokenAddresses.add(position.token0.id);
+                tokenAddresses.add(position.token1.id);
+            }
+        }
+
+        // Import CoinGecko utilities
+        const { getBatchTokenPrices } = await import('./coingeckoUtils');
+        
+        // Fetch all token prices in batch
+        const [tokenPrices, pricesErr] = await getBatchTokenPrices([...tokenAddresses]);
+        if (pricesErr) return [positionsByMiner, pricesErr];
+
+        // Enhance positions with USD values
+        const enhancedPositions: Record<string, LiquidityPosition[]> = {};
+        
+        for (const [minerId, positions] of Object.entries(positionsByMiner)) {
+            enhancedPositions[minerId] = positions.map(position => {
+                const token0Price = tokenPrices[position.token0.id.toLowerCase()]?.usd || 0;
+                const token1Price = tokenPrices[position.token1.id.toLowerCase()]?.usd || 0;
+                
+                const deposited0 = parseFloat(position.depositedToken0);
+                const deposited1 = parseFloat(position.depositedToken1);
+                
+                const token0Value = deposited0 * token0Price;
+                const token1Value = deposited1 * token1Price;
+                const totalValue = token0Value + token1Value;
+
+                return {
+                    ...position,
+                    usdValue: {
+                        token0Value,
+                        token1Value,
+                        totalValue,
+                        token0Price,
+                        token1Price
+                    }
+                };
+            });
+        }
+
+        return [enhancedPositions, null];
+    } catch (error) {
+        return [positionsByMiner, new Error(`Failed to enhance positions with USD values: ${error}`)];
+    }
 } 
