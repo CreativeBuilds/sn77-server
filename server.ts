@@ -497,7 +497,7 @@ const app = new Elysia()
                 {
                     path: "/positions",
                     method: "GET",
-                    description: "Retrieves all active Uniswap v3 liquidity positions for all miners with a linked Ethereum address. Results are cached for 5 minutes. Can be filtered by `hotkey` and/or `pool`. Inactive liquidity positions (positions where current tick is outside the position's bounds) are automatically filtered out. Includes USD values for each position calculated using CoinGecko price data.",
+                    description: "Retrieves all active Uniswap v3 liquidity positions for all miners with a linked Ethereum address. Results are cached for 5 minutes. Can be filtered by `hotkey` and/or `pool`. Inactive liquidity positions (positions where current tick is outside the position's bounds) are automatically filtered out. Includes current token amounts (token0Amount, token1Amount) and USD values for each position calculated using CoinGecko price data.",
                     inputs: {
                         query: {
                             hotkey: "string (optional miner hotkey to filter by)",
@@ -506,7 +506,7 @@ const app = new Elysia()
                     },
                     outputs: {
                         success: "boolean",
-                        positions: "Record<string, (LiquidityPosition & { emission: number, usdValue?: { token0Value: number, token1Value: number, totalValue: number, token0Price: number, token1Price: number } })[]> (map of miner hotkey to their liquidity positions with emission and USD values)",
+                        positions: "Record<string, (LiquidityPosition & { emission: number, token0Amount?: string, token1Amount?: string, usdValue?: { token0Value: number, token1Value: number, totalValue: number, token0Price: number, token1Price: number } })[]> (map of miner hotkey to their liquidity positions with emission, current token amounts, and USD values)",
                         cached: "boolean (true if the response is from cache)",
                         error: "string (description of error if success is false)"
                     }
@@ -514,7 +514,7 @@ const app = new Elysia()
                 {
                     path: "/positions/:minerHotkey",
                     method: "GET",
-                    description: "Retrieves all active Uniswap v3 liquidity positions for a specific miner with a linked Ethereum address. Results are cached for 5 minutes. Inactive liquidity positions (positions where current tick is outside the position's bounds) are automatically filtered out. Includes USD values for each position calculated using CoinGecko price data.",
+                    description: "Retrieves all active Uniswap v3 liquidity positions for a specific miner with a linked Ethereum address. Results are cached for 5 minutes. Inactive liquidity positions (positions where current tick is outside the position's bounds) are automatically filtered out. Includes current token amounts (token0Amount, token1Amount) and USD values for each position calculated using CoinGecko price data.",
                     inputs: {
                         params: {
                             minerHotkey: "string (miner hotkey to filter by)"
@@ -522,7 +522,7 @@ const app = new Elysia()
                     },
                     outputs: {
                         success: "boolean",
-                        positions: "(LiquidityPosition & { emission: number, usdValue?: { token0Value: number, token1Value: number, totalValue: number, token0Price: number, token1Price: number } })[] (array of liquidity positions with emission and USD values)",
+                        positions: "(LiquidityPosition & { emission: number, token0Amount?: string, token1Amount?: string, usdValue?: { token0Value: number, token1Value: number, totalValue: number, token0Price: number, token1Price: number } })[] (array of liquidity positions with emission, current token amounts, and USD values)",
                         cached: "boolean (true if the response is from cache)",
                         error: "string (description of error if success is false)"
                     }

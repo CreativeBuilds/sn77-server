@@ -43,8 +43,8 @@ export interface SubgraphPosition {
 }
 
 export interface LiquidityPosition extends SubgraphPosition {
-    currentToken0?: string;
-    currentToken1?: string;
+    token0Amount?: string;
+    token1Amount?: string;
     usdValue?: {
         token0Value: number;
         token1Value: number;
@@ -112,7 +112,7 @@ function calculateCurrentTokenAmounts(
  */
 function enhancePositionsWithCurrentAmounts(positions: SubgraphPosition[]): LiquidityPosition[] {
     return positions.map(position => {
-        const [currentToken0, currentToken1] = calculateCurrentTokenAmounts(
+        const [token0Amount, token1Amount] = calculateCurrentTokenAmounts(
             position.liquidity,
             position.pool.tick,
             position.tickLower.tickIdx,
@@ -123,8 +123,8 @@ function enhancePositionsWithCurrentAmounts(positions: SubgraphPosition[]): Liqu
         
         return {
             ...position,
-            currentToken0,
-            currentToken1
+            token0Amount,
+            token1Amount
         };
     });
 }
@@ -213,8 +213,8 @@ export async function enhancePositionsWithUSDValues(positionsByMiner: Record<str
                 const token1Price = tokenPrices[position.token1.id.toLowerCase()]?.usd || 0;
                 
                 // Use current token amounts instead of deposited amounts
-                const current0 = parseFloat(position.currentToken0 || position.depositedToken0);
-                const current1 = parseFloat(position.currentToken1 || position.depositedToken1);
+                const current0 = parseFloat(position.token0Amount || position.depositedToken0);
+                const current1 = parseFloat(position.token1Amount || position.depositedToken1);
                 
                 const token0Value = current0 * token0Price;
                 const token1Value = current1 * token1Price;
