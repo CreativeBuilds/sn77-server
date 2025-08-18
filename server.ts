@@ -15,7 +15,14 @@ import { initializeHoldersCache, startPeriodicHoldersRefresh, stopPeriodicHolder
 import { getAddressMapping, setAddressMapping, upsertUserVotes, getUserVotes, getPoolInfo, getAllPoolAddresses } from './utils/dbUtils';
 import { validateUniswapV3Pools } from './utils/poolValidationUtils';
 import { validateAndStorePoolInfo, getOrFetchPoolInfo } from './utils/enhancedPoolUtils';
-import { getMinerLiquidityPositions, LiquidityPosition, enhancePositionsWithUSDValues } from './utils/uniswapUtils';
+import { getMinerLiquidityPositions, enhancePositionsWithUSDValues } from './utils/uniswapUtils';
+import type { LiquidityPosition } from './utils/uniswapUtils';
+import { 
+    checkVoteCooldown, 
+    recordVoteChange,
+    cleanupExpiredCooldowns,
+    checkVoteCooldownStatus
+} from './utils/voteCooldownUtils';
 
 // Rate limiting storage
 const ipRequestCounts = new Map<string, { count: number; resetTime: number }>();
@@ -34,10 +41,22 @@ setInterval(() => {
     }
 }, 5 * 60 * 1000); // Clean every 5 minutes
 
+// Cooldown cleanup
+setInterval(async () => {
+    try {
+        const [success, error] = await cleanupExpiredCooldowns(db);
+        if (!success) console.error('Failed to cleanup expired cooldowns:', error);
+    } catch (error) {
+        console.error('Error during cooldown cleanup:', error);
+    }
+}, 60 * 60 * 1000); // Clean every hour
+
 // Rate limiting configuration
 const MAX_REQUESTS_PER_IP = 30; // 30 requests per minute per IP
 const MAX_REQUESTS_PER_ADDRESS = 10; // 10 requests per minute per address
 const MAX_VOTE_UPDATES_PER_ADDRESS = 5; // 5 vote updates per minute per address
+
+
 
 // Request size limits
 const MAX_MESSAGE_LENGTH = 10000;
@@ -83,12 +102,37 @@ await db.exec(`
     liquidity TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS vote_change_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ss58Address TEXT NOT NULL,
+    old_pools TEXT,
+    new_pools TEXT,
+    change_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    cooldown_until TIMESTAMP,
+    change_count INTEGER DEFAULT 1
   )
 `);
 
 // add column safely when DB already existed without it
 try { await db.exec('ALTER TABLE votes ADD COLUMN block_number INTEGER DEFAULT 0'); } catch (_) { }
 try { await db.exec('ALTER TABLE pool_info ADD COLUMN liquidity TEXT'); } catch (_) { }
+
+// Add vote change history table safely
+try { 
+    await db.exec(`
+        CREATE TABLE IF NOT EXISTS vote_change_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ss58Address TEXT NOT NULL,
+            old_pools TEXT,
+            new_pools TEXT,
+            change_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            cooldown_until TIMESTAMP,
+            change_count INTEGER DEFAULT 1
+        )
+    `); 
+} catch (_) { }
 
 const BLOCK_WINDOW = 10; // max allowed difference between submitted and current chain block
 const VOTES_CACHE_TTL_MS = 30 * 1000; // refresh every 30s to reduce DB load when /allVotes is spammed
@@ -276,7 +320,7 @@ async function getActivePoolAddresses(db: any): Promise<string[]> {
 
     const activePools = new Set<string>();
 
-    votes.forEach(vote => {
+    votes.forEach((vote: { ss58Address: string; pools: any[] }) => {
         const balance = holderMap.get(vote.ss58Address) || 0;
         if (balance > 0) {
             vote.pools.forEach((pool: any) => {
@@ -568,7 +612,40 @@ const app = new Elysia()
                         patch_behind_ok: "Client patch version can be behind server patch version",
                         update_required: "If major or minor versions don't match, client must update"
                     }
-                }
+                },
+                {
+                    path: "/voteCooldown/:address",
+                    method: "GET",
+                    description: "Retrieves the current cooldown status for a specific address's voting ability.",
+                    inputs: {
+                        params: {
+                            address: "string (coldkey address)"
+                        }
+                    },
+                    outputs: {
+                        success: "boolean",
+                        cooldownStatus: "object (contains cooldown information) or null if no cooldown active",
+                        message: "string (e.g., 'No active cooldown' or 'Cooldown active')",
+                        error: "string (description of error if success is false)"
+                    }
+                },
+                {
+                    path: "/voteHistory/:address",
+                    method: "GET",
+                    description: "Retrieves the complete vote change history for a specific address.",
+                    inputs: {
+                        params: {
+                            address: "string (coldkey address)"
+                        }
+                    },
+                    outputs: {
+                        success: "boolean",
+                        voteHistory: "Array<object> (list of vote changes with timestamps and cooldown information)",
+                        message: "string (e.g., 'Vote history retrieved')",
+                        error: "string (description of error if success is false)"
+                    }
+                },
+
             ]
         };
     })
@@ -715,10 +792,30 @@ const app = new Elysia()
                 return { success: false, error: 'Address does not hold alpha tokens' };
             }
 
+            // Check vote cooldown before processing
+            const newPoolsJson = JSON.stringify(normalizedPools);
+            const [cooldownAllowed, cooldownError, cooldownDuration] = await checkVoteCooldown(db, address, newPoolsJson);
+            if (!cooldownAllowed) {
+                console.error(`Vote cooldown active for address ${address}:`, cooldownError);
+                return { success: false, error: sanitizeError(cooldownError!, 'Vote change blocked by cooldown') };
+            }
+
+            // Get existing votes for cooldown tracking
+            const existingVote = await db.get('SELECT pools FROM user_votes WHERE ss58Address = ?', address) as any;
+            const oldPoolsJson = existingVote ? existingVote.pools : null;
+
             const [_, dbErr] = await upsertUserVotes(db, address, normalizedPools, signature, message, blockNumber, 1.0);
             if (dbErr) {
                 console.error(`Database error for address ${address}:`, dbErr);
                 return { success: false, error: sanitizeError(`DB error: ${dbErr}`, 'Database operation failed') };
+            }
+
+            // Record vote change for cooldown tracking (only if there was a change and cooldown applies)
+            if (cooldownDuration && oldPoolsJson && oldPoolsJson !== newPoolsJson) {
+                const [recorded, recordError] = await recordVoteChange(db, address, oldPoolsJson, newPoolsJson, cooldownDuration);
+                if (!recorded) {
+                    console.warn(`Failed to record vote change for address ${address}:`, recordError);
+                }
             }
 
             console.log(`Successfully updated votes for address ${address} with ${normalizedPools.length} pools`);
@@ -1283,7 +1380,65 @@ const app = new Elysia()
             versionCompatible: true,
             versionMessage
         };
-    });
+    })
+    .get(
+        '/voteCooldown/:address',
+        async ({ params, request }) => {
+            const { address } = params;
+            if (!address) return { success: false, error: 'Address required' };
+            if (address.length > MAX_ADDRESS_LENGTH) return { success: false, error: 'Invalid address' };
+
+            // Rate limiting for queries
+            const clientIP = getClientIP(request);
+            const [ipAllowed, ipError] = checkRateLimit(clientIP, ipRequestCounts, MAX_REQUESTS_PER_IP);
+            if (!ipAllowed) return { success: false, error: sanitizeError(ipError!, 'Too many requests') };
+
+            const [cooldownStatus, cooldownErr] = await checkVoteCooldownStatus(db, address);
+            if (cooldownErr) return { success: false, error: sanitizeError(`DB error: ${cooldownErr}`, 'Database operation failed') };
+
+            if (cooldownStatus.active) {
+                return { 
+                    success: true, 
+                    cooldownStatus, 
+                    message: `Cooldown active for ${cooldownStatus.timeDisplay}` 
+                };
+            }
+
+            return { 
+                success: true, 
+                cooldownStatus, 
+                message: 'No active cooldown' 
+            };
+        }
+    )
+    .get(
+        '/voteHistory/:address',
+        async ({ params, request }) => {
+            const { address } = params;
+            if (!address) return { success: false, error: 'Address required' };
+            if (address.length > MAX_ADDRESS_LENGTH) return { success: false, error: 'Invalid address' };
+
+            // Rate limiting for queries
+            const clientIP = getClientIP(request);
+            const [ipAllowed, ipError] = checkRateLimit(clientIP, ipRequestCounts, MAX_REQUESTS_PER_IP);
+            if (!ipAllowed) return { success: false, error: sanitizeError(ipError!, 'Too many requests') };
+
+            try {
+                const rows = await db.all('SELECT ss58Address, old_pools, new_pools, change_timestamp, cooldown_until, change_count FROM vote_change_history WHERE ss58Address = ?', address);
+                const voteHistory = rows.map(row => ({
+                    oldPools: JSON.parse(row.old_pools),
+                    newPools: JSON.parse(row.new_pools),
+                    changeTimestamp: row.change_timestamp,
+                    cooldownUntil: row.cooldown_until,
+                    changeCount: row.change_count
+                }));
+                return { success: true, voteHistory, message: 'Vote history retrieved' };
+            } catch (e: any) {
+                return { success: false, error: sanitizeError(`DB error: ${e}`, 'Database operation failed') };
+            }
+        }
+    )
+
 
 // Initialize the server with cold-loaded data
 const startServer = async (): Promise<void> => {
