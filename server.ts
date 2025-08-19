@@ -483,17 +483,21 @@ const app = new Elysia()
                 {
                     path: "/allVotes",
                     method: "GET",
-                    description: "Retrieves all stored user votes with token-based weight multipliers. Results are cached for 30 seconds.",
+                    description: "Retrieves all stored user votes with token-based weight multipliers. Only includes voters who hold alpha tokens (filters out users with zero alpha balance). Results are cached for 30 seconds.",
                     inputs: "None",
                     outputs: {
                         success: "boolean",
-                        votes: "Array<object> (list of all votes, each containing: coldkey address, pools, total_weight, block_number, alphaBalance, weightMultiplier)",
-                        totalAlphaTokens: "number (total alpha tokens held by all voters)",
+                        votes: "Array<object> (list of all votes from alpha token holders, each containing: coldkey address, pools, total_weight, block_number, alphaBalance, weightMultiplier)",
+                        totalAlphaTokens: "number (total alpha tokens held by all valid voters)",
                         cached: "boolean (true if the response is from cache)",
                         error: "string (description of error if success is false)"
                     },
+                    filtering: {
+                        alpha_holders_only: "Only voters who hold alpha tokens are included in the response",
+                        zero_balance_excluded: "Users with zero alpha token balance are automatically filtered out"
+                    },
                     weight_calculation: {
-                        single_voter: "If only one voter exists, they receive full weight (weightMultiplier = 1)",
+                        single_voter: "If only one valid voter exists, they receive full weight (weightMultiplier = 1)",
                         multiple_voters: "Weight multiplier is calculated as: voter's_alpha_tokens / total_alpha_tokens"
                     }
                 },
@@ -542,8 +546,8 @@ const app = new Elysia()
                         success: "boolean",
                         pools: "Array<{ address: string, totalWeight: number, token0: string, token1: string, token0Symbol: string, token1Symbol: string, fee: number, voters: Array<{ address: string, weight: number, alphaBalance: number, weightMultiplier: number }> }> (all pools being voted for with voter details and pool information)",
                         totalPools: "number (total number of unique pools being voted for)",
-                        totalVoters: "number (total number of unique voters)",
-                        totalAlphaTokens: "number (total alpha tokens held by all voters)",
+                        totalVoters: "number (total number of unique voters with alpha tokens)",
+                        totalAlphaTokens: "number (total alpha tokens held by all valid voters)",
                         cached: "boolean (true if the response is from cache)",
                         error: "string (description of error if success is false)"
                     },
