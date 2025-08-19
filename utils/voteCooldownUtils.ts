@@ -34,7 +34,7 @@ export const checkVoteCooldown = async (
 
         // Check if user is currently in cooldown
         const cooldownRecord = await db.get(
-            'SELECT cooldown_until, change_count FROM vote_change_history WHERE ss58Address = ? ORDER BY change_timestamp DESC LIMIT 1',
+            'SELECT cooldown_until, change_count, change_timestamp FROM vote_change_history WHERE ss58Address = ? ORDER BY change_timestamp DESC LIMIT 1',
             ss58Address
         ) as any;
 
@@ -44,14 +44,28 @@ export const checkVoteCooldown = async (
             
             if (now < cooldownUntil) {
                 const remainingMs = cooldownUntil.getTime() - now.getTime();
-                const remainingHours = Math.ceil(remainingMs / (1000 * 60 * 60));
-                return [false, `Vote change blocked. Cooldown active for ${remainingHours} more hours.`, null];
+                const remainingMinutes = Math.ceil(remainingMs / (1000 * 60));
+                return [false, `Vote change blocked. Cooldown active for ${remainingMinutes} more minutes.`, null];
+            }
+        }
+
+        // Check if cooldown should reset due to inactivity
+        let effectiveChangeCount = 0;
+        if (cooldownRecord && cooldownRecord.change_timestamp) {
+            const lastChangeTime = new Date(cooldownRecord.change_timestamp);
+            const now = new Date();
+            const timeSinceLastChange = now.getTime() - lastChangeTime.getTime();
+            
+            // If more than 24 hours since last change, reset change count
+            if (timeSinceLastChange > COOLDOWN_RESET_PERIOD_MS) {
+                effectiveChangeCount = 0;
+            } else {
+                effectiveChangeCount = cooldownRecord.change_count;
             }
         }
 
         // Calculate new cooldown duration
-        const changeCount = cooldownRecord ? cooldownRecord.change_count : 0;
-        const cooldownDuration = calculateCooldownDuration(changeCount);
+        const cooldownDuration = calculateCooldownDuration(effectiveChangeCount);
         
         return [true, null, cooldownDuration];
     } catch (error) {
@@ -70,13 +84,25 @@ export const recordVoteChange = async (
         const now = new Date();
         const cooldownUntil = new Date(now.getTime() + cooldownDuration);
 
-        // Get current change count
+        // Get current change count and check if it should reset
         const currentRecord = await db.get(
-            'SELECT change_count FROM vote_change_history WHERE ss58Address = ? ORDER BY change_timestamp DESC LIMIT 1',
+            'SELECT change_count, change_timestamp FROM vote_change_history WHERE ss58Address = ? ORDER BY change_timestamp DESC LIMIT 1',
             ss58Address
         ) as any;
 
-        const changeCount = currentRecord ? currentRecord.change_count + 1 : 1;
+        let changeCount = 1; // Default to 1 for new changes
+        
+        if (currentRecord && currentRecord.change_timestamp) {
+            const lastChangeTime = new Date(currentRecord.change_timestamp);
+            const timeSinceLastChange = now.getTime() - lastChangeTime.getTime();
+            
+            // If more than 24 hours since last change, reset change count
+            if (timeSinceLastChange > COOLDOWN_RESET_PERIOD_MS) {
+                changeCount = 1; // Reset to 1
+            } else {
+                changeCount = currentRecord.change_count + 1;
+            }
+        }
 
         // Insert new change record
         await db.run(
@@ -135,12 +161,12 @@ export const checkVoteCooldownStatus = async (
     try {
         // Check if user is currently in cooldown
         const cooldownRecord = await db.get(
-            'SELECT cooldown_until, change_count FROM vote_change_history WHERE ss58Address = ? ORDER BY change_timestamp DESC LIMIT 1',
+            'SELECT cooldown_until, change_count, change_timestamp FROM vote_change_history WHERE ss58Address = ? ORDER BY change_timestamp DESC LIMIT 1',
             ss58Address
         ) as any;
 
         if (!cooldownRecord || !cooldownRecord.cooldown_until) {
-            return [{ active: false, remainingTime: null, changeCount: 0 }, null];
+            return [{ active: false, remainingTime: null, remainingMinutes: null, timeDisplay: null, cooldownUntil: null, changeCount: 0, nextCooldownDuration: '72m' }, null];
         }
 
         const cooldownUntil = new Date(cooldownRecord.cooldown_until);
@@ -150,7 +176,7 @@ export const checkVoteCooldownStatus = async (
             const remainingMs = cooldownUntil.getTime() - now.getTime();
             const remainingMinutes = Math.ceil(remainingMs / (1000 * 60));
             const remainingHours = Math.floor(remainingMs / (1000 * 60 * 60));
-            const remainingMinutesOnly = remainingMinutes % 60;
+            const remainingMinutesOnly = Math.floor((remainingMs % (1000 * 60 * 60)) / (1000 * 60));
             
             let timeDisplay = '';
             if (remainingHours > 0) {
@@ -158,6 +184,13 @@ export const checkVoteCooldownStatus = async (
             } else {
                 timeDisplay = `${remainingMinutes}m`;
             }
+
+            // Calculate what the next cooldown would be
+            const nextCooldownDuration = calculateCooldownDuration(cooldownRecord.change_count);
+            const nextCooldownMinutes = Math.ceil(nextCooldownDuration / (1000 * 60));
+            const nextCooldownDisplay = nextCooldownMinutes >= 60 ? 
+                `${Math.floor(nextCooldownMinutes / 60)}h ${nextCooldownMinutes % 60}m` : 
+                `${nextCooldownMinutes}m`;
             
             return [{
                 active: true,
@@ -166,11 +199,27 @@ export const checkVoteCooldownStatus = async (
                 remainingHours,
                 timeDisplay,
                 cooldownUntil: cooldownUntil.toISOString(),
-                changeCount: cooldownRecord.change_count
+                changeCount: cooldownRecord.change_count,
+                nextCooldownDuration: nextCooldownDisplay
             }, null];
         }
 
-        return [{ active: false, remainingTime: null, changeCount: cooldownRecord.change_count }, null];
+        // Calculate what the next cooldown would be
+        const nextCooldownDuration = calculateCooldownDuration(cooldownRecord.change_count);
+        const nextCooldownMinutes = Math.ceil(nextCooldownDuration / (1000 * 60));
+        const nextCooldownDisplay = nextCooldownMinutes >= 60 ? 
+            `${Math.floor(nextCooldownMinutes / 60)}h ${nextCooldownMinutes % 60}m` : 
+            `${nextCooldownMinutes}m`;
+
+        return [{ 
+            active: false, 
+            remainingTime: null, 
+            remainingMinutes: null, 
+            timeDisplay: null, 
+            cooldownUntil: null, 
+            changeCount: cooldownRecord.change_count,
+            nextCooldownDuration: nextCooldownDisplay
+        }, null];
     } catch (error) {
         return [null, `Database error: ${error}`];
     }
@@ -185,12 +234,13 @@ const calculateCooldownDuration = (changeCount: number): number => {
     const multiplier = Math.pow(PROGRESSIVE_COOLDOWN_MULTIPLIER, changeCount - FREQUENT_CHANGE_THRESHOLD + 1);
     const duration = VOTE_CHANGE_COOLDOWN_MS * multiplier;
     
-    // Cap at maximum cooldown
+    // Cap at maximum cooldown (8 hours)
     return Math.min(duration, MAX_COOLDOWN_MS);
 };
 
-// Constants (these should match the ones in server.ts)
+// Constants
 const VOTE_CHANGE_COOLDOWN_MS = 72 * 60 * 1000; // 72 minutes base cooldown
 const PROGRESSIVE_COOLDOWN_MULTIPLIER = 2; // Double cooldown for each frequent change
-const MAX_COOLDOWN_MS = 24 * 60 * 60 * 1000; // Max 24 hours cooldown
-const FREQUENT_CHANGE_THRESHOLD = 3; // Changes within this threshold trigger progressive cooldown 
+const MAX_COOLDOWN_MS = 8 * 60 * 60 * 1000; // Max 8 hours cooldown
+const FREQUENT_CHANGE_THRESHOLD = 3; // Changes within this threshold trigger progressive cooldown
+const COOLDOWN_RESET_PERIOD_MS = 24 * 60 * 60 * 1000; // 24 hours of inactivity resets change count 
