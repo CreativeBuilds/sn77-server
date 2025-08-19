@@ -275,12 +275,18 @@ const calculatePoolEmissions = async (): Promise<Map<string, number>> => {
     }
     const holderMap = new Map<string, number>(holders.map((h: Holder) => [h.address, parseFloat(h.alphaBalanceRaw || '0')]));
     
-    const totalAlphaTokens = votes.reduce((sum: number, vote) => {
+    // Filter out voters who don't hold any alpha tokens
+    const validVotes = votes.filter(vote => {
+        const balance = holderMap.get(vote.ss58Address) || 0;
+        return balance > 0;
+    });
+    
+    const totalAlphaTokens = validVotes.reduce((sum: number, vote) => {
         const balance = holderMap.get(vote.ss58Address) || 0;
         return sum + balance;
     }, 0);
 
-    const weightedVotes = votes.map(vote => {
+    const weightedVotes = validVotes.map(vote => {
         const balance: number = holderMap.get(vote.ss58Address) || 0;
         const weightMultiplier: number = totalAlphaTokens > 0 ? balance / totalAlphaTokens : 0;
         return { ...vote, weightMultiplier };
@@ -988,15 +994,34 @@ const app = new Elysia()
                 }
                 const holderMap = new Map<string, number>(holders.map((h: Holder) => [h.address, parseFloat(h.alphaBalanceRaw || '0')]));
                 
-                // Calculate total alpha tokens held by voters
-                const totalAlphaTokens = votes.reduce((sum: number, vote) => {
+                // Filter out voters who don't hold any alpha tokens
+                const validVotes = votes.filter(vote => {
+                    const balance = holderMap.get(vote.ss58Address) || 0;
+                    return balance > 0;
+                });
+                
+                if (validVotes.length === 0) {
+                    votesCache = { 
+                        data: { votes: [], totalAlphaTokens: 0 }, 
+                        lastUpdated: Date.now() 
+                    };
+                    return { 
+                        success: true, 
+                        votes: [],
+                        totalAlphaTokens: 0,
+                        cached: false 
+                    };
+                }
+                
+                // Calculate total alpha tokens held by valid voters
+                const totalAlphaTokens = validVotes.reduce((sum: number, vote) => {
                     const balance = holderMap.get(vote.ss58Address) || 0;
                     return sum + balance;
                 }, 0);
 
-                // If only one voter, they get full weight
-                if (votes.length === 1) {
-                    const vote = votes[0];
+                // If only one valid voter, they get full weight
+                if (validVotes.length === 1) {
+                    const vote = validVotes[0];
                     const balance = holderMap.get(vote.ss58Address) || 0;
                     const weightedVotes = [{
                         ...vote,
@@ -1018,8 +1043,8 @@ const app = new Elysia()
                     };
                 }
 
-                // Calculate weight multipliers based on token holdings
-                const weightedVotes = votes.map(vote => {
+                // Calculate weight multipliers based on token holdings for valid voters
+                const weightedVotes = validVotes.map(vote => {
                     const balance: number = holderMap.get(vote.ss58Address) || 0;
                     const weightMultiplier: number = totalAlphaTokens > 0 ? balance / totalAlphaTokens : 0;
                     return {
@@ -1124,14 +1149,20 @@ const app = new Elysia()
                 }
                 const holderMap = new Map<string, number>(holders.map((h: Holder) => [h.address, parseFloat(h.alphaBalanceRaw || '0')]));
                 
-                // Calculate total alpha tokens held by voters
-                const totalAlphaTokens = votes.reduce((sum: number, vote) => {
+                // Filter out voters who don't hold any alpha tokens
+                const validVotes = votes.filter(vote => {
+                    const balance = holderMap.get(vote.ss58Address) || 0;
+                    return balance > 0;
+                });
+                
+                // Calculate total alpha tokens held by valid voters
+                const totalAlphaTokens = validVotes.reduce((sum: number, vote) => {
                     const balance = holderMap.get(vote.ss58Address) || 0;
                     return sum + balance;
                 }, 0);
 
-                // Calculate weight multipliers based on token holdings
-                const weightedVotes = votes.map(vote => {
+                // Calculate weight multipliers based on token holdings for valid voters
+                const weightedVotes = validVotes.map(vote => {
                     const balance: number = holderMap.get(vote.ss58Address) || 0;
                     const weightMultiplier: number = totalAlphaTokens > 0 ? balance / totalAlphaTokens : 0;
                     return {
@@ -1197,7 +1228,7 @@ const app = new Elysia()
                     success: true, 
                     pools,
                     totalPools: pools.length,
-                    totalVoters: weightedVotes.length,
+                    totalVoters: validVotes.length,
                     totalAlphaTokens,
                     cached: false 
                 };
