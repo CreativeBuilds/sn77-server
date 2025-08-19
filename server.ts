@@ -797,6 +797,14 @@ const app = new Elysia()
             const [cooldownAllowed, cooldownError, cooldownDuration] = await checkVoteCooldown(db, address, newPoolsJson);
             if (!cooldownAllowed) {
                 console.error(`Vote cooldown active for address ${address}:`, cooldownError);
+                
+                // Get detailed cooldown status to show when they can vote again
+                const [cooldownStatus, statusError] = await checkVoteCooldownStatus(db, address);
+                if (cooldownStatus && cooldownStatus.active) {
+                    const errorMessage = `Vote change blocked by cooldown. You can vote again in ${cooldownStatus.timeDisplay} (at ${cooldownStatus.cooldownUntil})`;
+                    return { success: false, error: errorMessage };
+                }
+                
                 return { success: false, error: sanitizeError(cooldownError!, 'Vote change blocked by cooldown') };
             }
 
