@@ -427,8 +427,9 @@ const app = new Elysia()
                     },
                     cooldown_features: {
                         base_cooldown: "72 minutes after vote changes",
-                        progressive_penalties: "Cooldown doubles for frequent changes (144m, 288m, 576m...)",
-                        max_cooldown: "24 hours maximum cooldown",
+                        progressive_system: "Cooldown doubles for frequent changes (72m → 144m → 288m → 576m)",
+                        max_cooldown: "8 hours maximum cooldown cap",
+                        cooldown_reset: "24 hours of inactivity resets change count back to 72m",
                         enhanced_errors: "Detailed error messages show remaining cooldown time and exact unlock time",
                         first_time_voting: "No cooldown for new voters"
                     }
@@ -641,7 +642,8 @@ const app = new Elysia()
                         remainingMinutes: "total minutes remaining",
                         timeDisplay: "human-readable format (e.g., '1h 12m' or '45m')",
                         cooldownUntil: "ISO timestamp when cooldown expires",
-                        changeCount: "number of vote changes made by this address"
+                        changeCount: "number of vote changes made by this address",
+                        nextCooldownDuration: "what the next cooldown duration would be (e.g., '72m', '2h 24m')"
                     }
                 },
                 {
@@ -664,7 +666,7 @@ const app = new Elysia()
                         newPools: "new pool configuration after the change",
                         changeTimestamp: "when the vote change occurred",
                         cooldownUntil: "when the cooldown period expired/expires",
-                        changeCount: "progressive change counter for escalating cooldowns"
+                        changeCount: "sequential change counter for tracking vote modifications"
                     }
                 },
 
@@ -814,38 +816,55 @@ const app = new Elysia()
                 return { success: false, error: 'Address does not hold alpha tokens' };
             }
 
-            // Check vote cooldown before processing
-            const newPoolsJson = JSON.stringify(normalizedPools);
-            const [cooldownAllowed, cooldownError, cooldownDuration] = await checkVoteCooldown(db, address, newPoolsJson);
-            if (!cooldownAllowed) {
-                console.error(`Vote cooldown active for address ${address}:`, cooldownError);
-                
-                // Get detailed cooldown status to show when they can vote again
-                const [cooldownStatus, statusError] = await checkVoteCooldownStatus(db, address);
-                if (cooldownStatus && cooldownStatus.active) {
-                    const errorMessage = `Vote change blocked by cooldown. You can vote again in ${cooldownStatus.timeDisplay} (at ${cooldownStatus.cooldownUntil})`;
-                    return { success: false, error: errorMessage };
-                }
-                
-                return { success: false, error: sanitizeError(cooldownError!, 'Vote change blocked by cooldown') };
-            }
-
-            // Get existing votes for cooldown tracking
+            // Get existing votes first to check for actual changes
             const existingVote = await db.get('SELECT pools FROM user_votes WHERE ss58Address = ?', address) as any;
             const oldPoolsJson = existingVote ? existingVote.pools : null;
-
-            const [_, dbErr] = await upsertUserVotes(db, address, normalizedPools, signature, message, blockNumber, 1.0);
-            if (dbErr) {
-                console.error(`Database error for address ${address}:`, dbErr);
-                return { success: false, error: sanitizeError(`DB error: ${dbErr}`, 'Database operation failed') };
+            const newPoolsJson = JSON.stringify(normalizedPools);
+            
+            // Check if there's an actual change in votes
+            const hasVoteChange = !oldPoolsJson || oldPoolsJson !== newPoolsJson;
+            
+            if (hasVoteChange) {
+                // Check vote cooldown only if there's an actual change
+                const [cooldownAllowed, cooldownError, cooldownDuration] = await checkVoteCooldown(db, address, newPoolsJson);
+                if (!cooldownAllowed) {
+                    console.error(`Vote cooldown active for address ${address}:`, cooldownError);
+                    
+                    // Get detailed cooldown status to show when they can vote again
+                    const [cooldownStatus, statusError] = await checkVoteCooldownStatus(db, address);
+                    if (cooldownStatus && cooldownStatus.active) {
+                        const errorMessage = `Vote change blocked by cooldown. You can vote again in ${cooldownStatus.timeDisplay} (at ${cooldownStatus.cooldownUntil})`;
+                        return { success: false, error: errorMessage };
+                    }
+                    
+                    return { success: false, error: sanitizeError(cooldownError!, 'Vote change blocked by cooldown') };
+                }
             }
 
-            // Record vote change for cooldown tracking (only if there was a change and cooldown applies)
-            if (cooldownDuration && oldPoolsJson && oldPoolsJson !== newPoolsJson) {
-                const [recorded, recordError] = await recordVoteChange(db, address, oldPoolsJson, newPoolsJson, cooldownDuration);
-                if (!recorded) {
-                    console.warn(`Failed to record vote change for address ${address}:`, recordError);
+            // Execute operations sequentially with proper error handling
+            try {
+                // Update the votes
+                const [_, dbErr] = await upsertUserVotes(db, address, normalizedPools, signature, message, blockNumber, 1.0);
+                if (dbErr) {
+                    console.error(`Database error for address ${address}:`, dbErr);
+                    return { success: false, error: sanitizeError(`DB error: ${dbErr}`, 'Database operation failed') };
                 }
+
+                // Record vote change for cooldown tracking only if there was an actual change
+                if (hasVoteChange && oldPoolsJson) {
+                    // Get the cooldown duration that was calculated during the check
+                    const [cooldownAllowed, cooldownError, cooldownDuration] = await checkVoteCooldown(db, address, newPoolsJson);
+                    if (cooldownDuration) {
+                        const [recorded, recordError] = await recordVoteChange(db, address, oldPoolsJson, newPoolsJson, cooldownDuration);
+                        if (!recorded) {
+                            console.warn(`Failed to record vote change for address ${address}:`, recordError);
+                            // Don't fail the entire operation if recording fails, just log it
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error(`Operation failed for address ${address}:`, error);
+                return { success: false, error: sanitizeError(`Operation failed: ${error}`, 'Database operation failed') };
             }
 
             console.log(`Successfully updated votes for address ${address} with ${normalizedPools.length} pools`);
@@ -1455,13 +1474,28 @@ const app = new Elysia()
 
             try {
                 const rows = await db.all('SELECT ss58Address, old_pools, new_pools, change_timestamp, cooldown_until, change_count FROM vote_change_history WHERE ss58Address = ?', address);
-                const voteHistory = rows.map(row => ({
-                    oldPools: JSON.parse(row.old_pools),
-                    newPools: JSON.parse(row.new_pools),
-                    changeTimestamp: row.change_timestamp,
-                    cooldownUntil: row.cooldown_until,
-                    changeCount: row.change_count
-                }));
+                const voteHistory = rows.map(row => {
+                    try {
+                        return {
+                            oldPools: row.old_pools ? JSON.parse(row.old_pools) : null,
+                            newPools: row.new_pools ? JSON.parse(row.new_pools) : null,
+                            changeTimestamp: row.change_timestamp,
+                            cooldownUntil: row.cooldown_until,
+                            changeCount: row.change_count
+                        };
+                    } catch (parseError) {
+                        console.error(`Failed to parse JSON for row in vote history for address ${address}:`, parseError);
+                        // Return a safe fallback for malformed data
+                        return {
+                            oldPools: null,
+                            newPools: null,
+                            changeTimestamp: row.change_timestamp,
+                            cooldownUntil: row.cooldown_until,
+                            changeCount: row.change_count,
+                            parseError: 'Data corrupted'
+                        };
+                    }
+                });
                 return { success: true, voteHistory, message: 'Vote history retrieved' };
             } catch (e: any) {
                 return { success: false, error: sanitizeError(`DB error: ${e}`, 'Database operation failed') };
