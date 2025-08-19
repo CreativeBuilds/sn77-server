@@ -407,7 +407,7 @@ const app = new Elysia()
                 {
                     path: "/updateVotes",
                     method: "POST",
-                    description: "Updates or registers votes for a given coldkey address. The coldkey must hold alpha tokens.",
+                    description: "Updates or registers votes for a given coldkey address. The coldkey must hold alpha tokens. Includes vote cooldown management to prevent gaming of the incentive mechanism.",
                     inputs: {
                         body: {
                             signature: "string (Polkadot/Substrate signature of the message)",
@@ -424,6 +424,13 @@ const app = new Elysia()
                         message: "string (e.g., 'Votes updated')",
                         pools: "Array<{ address: string, weight: number }> (normalized pools if successful)",
                         error: "string (description of error if success is false)"
+                    },
+                    cooldown_features: {
+                        base_cooldown: "72 minutes after vote changes",
+                        progressive_penalties: "Cooldown doubles for frequent changes (144m, 288m, 576m...)",
+                        max_cooldown: "24 hours maximum cooldown",
+                        enhanced_errors: "Detailed error messages show remaining cooldown time and exact unlock time",
+                        first_time_voting: "No cooldown for new voters"
                     }
                 },
                 {
@@ -616,7 +623,7 @@ const app = new Elysia()
                 {
                     path: "/voteCooldown/:address",
                     method: "GET",
-                    description: "Retrieves the current cooldown status for a specific address's voting ability.",
+                    description: "Retrieves the current cooldown status for a specific address's voting ability. Provides detailed timing information including remaining time and exact unlock timestamp.",
                     inputs: {
                         params: {
                             address: "string (coldkey address)"
@@ -625,14 +632,22 @@ const app = new Elysia()
                     outputs: {
                         success: "boolean",
                         cooldownStatus: "object (contains cooldown information) or null if no cooldown active",
-                        message: "string (e.g., 'No active cooldown' or 'Cooldown active')",
+                        message: "string (e.g., 'No active cooldown' or 'Cooldown active for 1h 12m')",
                         error: "string (description of error if success is false)"
+                    },
+                    cooldown_status_details: {
+                        active: "boolean indicating if cooldown is currently active",
+                        remainingTime: "milliseconds until cooldown expires",
+                        remainingMinutes: "total minutes remaining",
+                        timeDisplay: "human-readable format (e.g., '1h 12m' or '45m')",
+                        cooldownUntil: "ISO timestamp when cooldown expires",
+                        changeCount: "number of vote changes made by this address"
                     }
                 },
                 {
                     path: "/voteHistory/:address",
                     method: "GET",
-                    description: "Retrieves the complete vote change history for a specific address.",
+                    description: "Retrieves the complete vote change history for a specific address. Tracks all vote modifications with detailed cooldown information for transparency and audit purposes.",
                     inputs: {
                         params: {
                             address: "string (coldkey address)"
@@ -643,6 +658,13 @@ const app = new Elysia()
                         voteHistory: "Array<object> (list of vote changes with timestamps and cooldown information)",
                         message: "string (e.g., 'Vote history retrieved')",
                         error: "string (description of error if success is false)"
+                    },
+                    vote_history_details: {
+                        oldPools: "previous pool configuration before the change",
+                        newPools: "new pool configuration after the change",
+                        changeTimestamp: "when the vote change occurred",
+                        cooldownUntil: "when the cooldown period expired/expires",
+                        changeCount: "progressive change counter for escalating cooldowns"
                     }
                 },
 
