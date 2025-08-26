@@ -557,6 +557,25 @@ const app = new Elysia()
                     }
                 },
                 {
+                    path: "/pools",
+                    method: "GET",
+                    description: "Retrieves all incentivized pools with voting information and alpha token holdings for each voter. Only shows pools that have at least one active voter (voter holding alpha tokens).",
+                    inputs: "None",
+                    outputs: {
+                        success: "boolean",
+                        pools: "Array<{ address: string, totalWeight: number, token0: string, token1: string, token0Symbol: string, token1Symbol: string, fee: number, voters: Array<{ address: string, weight: number, alphaBalance: number, weightMultiplier: number }> }> (all pools being voted for with voter details and pool information)",
+                        totalPools: "number (total number of unique pools being voted for)",
+                        totalVoters: "number (total number of unique voters with alpha tokens)",
+                        totalAlphaTokens: "number (total alpha tokens held by all valid voters)",
+                        cached: "boolean (true if the response is from cache)",
+                        error: "string (description of error if success is false)"
+                    },
+                    filtering: {
+                        active_voters_only: "Only pools with at least one voter holding alpha tokens are included",
+                        inactive_pools: "Pools where all voters have 0 alpha tokens are filtered out"
+                    }
+                },
+                {
                     path: "/positions",
                     method: "GET",
                     description: "Retrieves all active Uniswap v3 liquidity positions for all miners with a linked Ethereum address. Results are cached for 5 minutes. Can be filtered by `hotkey` and/or `pool`. Inactive liquidity positions (positions where current tick is outside the position's bounds) are automatically filtered out. Includes current token amounts (token0Amount, token1Amount) and USD values for each position calculated using CoinGecko price data.",
