@@ -678,7 +678,7 @@ const app = new Elysia()
                 {
                     path: "/voteHistory/:address",
                     method: "GET",
-                    description: "Retrieves the complete vote change history for a specific address. Tracks all vote modifications with detailed cooldown information for transparency and audit purposes.",
+                    description: "Retrieves the complete vote change history and current active vote for a specific address. Tracks all vote modifications with detailed cooldown information for transparency and audit purposes.",
                     inputs: {
                         params: {
                             address: "string (coldkey address)"
@@ -687,6 +687,7 @@ const app = new Elysia()
                     outputs: {
                         success: "boolean",
                         voteHistory: "Array<object> (list of vote changes with timestamps and cooldown information)",
+                        currentVote: "object | null (current active vote if exists)",
                         message: "string (e.g., 'Vote history retrieved')",
                         error: "string (description of error if success is false)"
                     },
@@ -696,6 +697,12 @@ const app = new Elysia()
                         changeTimestamp: "when the vote change occurred",
                         cooldownUntil: "when the cooldown period expired/expires",
                         changeCount: "sequential change counter for tracking vote modifications"
+                    },
+                    current_vote_details: {
+                        pools: "current pool configuration",
+                        totalWeight: "total weight of current vote",
+                        blockNumber: "block number when vote was submitted",
+                        isActive: "always true for current vote"
                     }
                 },
 
@@ -1514,48 +1521,69 @@ const app = new Elysia()
             };
         }
     )
-    .get(
-        '/voteHistory/:address',
-        async ({ params, request }) => {
-            const { address } = params;
-            if (!address) return { success: false, error: 'Address required' };
-            if (address.length > MAX_ADDRESS_LENGTH) return { success: false, error: 'Invalid address' };
+            .get(
+            '/voteHistory/:address',
+            async ({ params, request }) => {
+                const { address } = params;
+                if (!address) return { success: false, error: 'Address required' };
+                if (address.length > MAX_ADDRESS_LENGTH) return { success: false, error: 'Invalid address' };
 
-            // Rate limiting for queries
-            const clientIP = getClientIP(request);
-            const [ipAllowed, ipError] = checkRateLimit(clientIP, ipRequestCounts, MAX_REQUESTS_PER_IP);
-            if (!ipAllowed) return { success: false, error: sanitizeError(ipError!, 'Too many requests') };
+                // Rate limiting for queries
+                const clientIP = getClientIP(request);
+                const [ipAllowed, ipError] = checkRateLimit(clientIP, ipRequestCounts, MAX_REQUESTS_PER_IP);
+                if (!ipAllowed) return { success: false, error: sanitizeError(ipError!, 'Too many requests') };
 
-            try {
-                const rows = await db.all('SELECT ss58Address, old_pools, new_pools, change_timestamp, cooldown_until, change_count FROM vote_change_history WHERE ss58Address = ?', address);
-                const voteHistory = rows.map(row => {
-                    try {
-                        return {
-                            oldPools: row.old_pools ? JSON.parse(row.old_pools) : null,
-                            newPools: row.new_pools ? JSON.parse(row.new_pools) : null,
-                            changeTimestamp: row.change_timestamp,
-                            cooldownUntil: row.cooldown_until,
-                            changeCount: row.change_count
-                        };
-                    } catch (parseError) {
-                        console.error(`Failed to parse JSON for row in vote history for address ${address}:`, parseError);
-                        // Return a safe fallback for malformed data
-                        return {
-                            oldPools: null,
-                            newPools: null,
-                            changeTimestamp: row.change_timestamp,
-                            cooldownUntil: row.cooldown_until,
-                            changeCount: row.change_count,
-                            parseError: 'Data corrupted'
-                        };
-                    }
-                });
-                return { success: true, voteHistory, message: 'Vote history retrieved' };
-            } catch (e: any) {
-                return { success: false, error: sanitizeError(`DB error: ${e}`, 'Database operation failed') };
+                try {
+                    // Get current active vote
+                    const currentVote = await db.get('SELECT ss58Address, pools, total_weight, block_number FROM user_votes WHERE ss58Address = ?', address);
+                    
+                    // Get vote change history
+                    const rows = await db.all('SELECT ss58Address, old_pools, new_pools, change_timestamp, cooldown_until, change_count FROM vote_change_history WHERE ss58Address = ? ORDER BY change_timestamp DESC', address);
+                    
+                    const voteHistory = rows.map(row => {
+                        try {
+                            return {
+                                oldPools: row.old_pools ? JSON.parse(row.old_pools) : null,
+                                newPools: row.new_pools ? JSON.parse(row.new_pools) : null,
+                                changeTimestamp: row.change_timestamp,
+                                cooldownUntil: row.cooldown_until,
+                                changeCount: row.change_count
+                            };
+                        } catch (parseError) {
+                            console.error(`Failed to parse JSON for row in vote history for address ${address}:`, parseError);
+                            // Return a safe fallback for malformed data
+                            return {
+                                oldPools: null,
+                                newPools: null,
+                                changeTimestamp: row.change_timestamp,
+                                cooldownUntil: row.cooldown_until,
+                                changeCount: row.change_count,
+                                parseError: 'Data corrupted'
+                            };
+                        }
+                    });
+
+                    // Include current active vote if it exists
+                    const currentVoteData = currentVote ? {
+                        currentVote: {
+                            pools: JSON.parse(currentVote.pools),
+                            totalWeight: currentVote.total_weight,
+                            blockNumber: currentVote.block_number,
+                            isActive: true
+                        }
+                    } : {};
+
+                    return { 
+                        success: true, 
+                        voteHistory, 
+                        ...currentVoteData,
+                        message: 'Vote history retrieved' 
+                    };
+                } catch (e: any) {
+                    return { success: false, error: sanitizeError(`DB error: ${e}`, 'Database operation failed') };
+                }
             }
-        }
-    )
+        )
 
 
 // Initialize the server with cold-loaded data
