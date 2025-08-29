@@ -857,12 +857,40 @@ const app = new Elysia()
             const oldPoolsJson = existingVote ? existingVote.pools : null;
             const newPoolsJson = JSON.stringify(normalizedPools);
             
-            // Check if there's an actual change in votes
-            const hasVoteChange = !oldPoolsJson || oldPoolsJson !== newPoolsJson;
+            // Normalize vote arrays for consistent comparison (sort by weight desc, then by address)
+            const normalizeVotes = (pools: { address: string, weight: number }[]) => {
+                return [...pools].sort((a, b) => {
+                    // First sort by weight descending (largest to smallest)
+                    if (b.weight !== a.weight) {
+                        return b.weight - a.weight;
+                    }
+                    // If weights are equal, sort by address for consistency
+                    return a.address.localeCompare(b.address);
+                });
+            };
+            
+            // Check if there's an actual change in votes (using normalized comparison)
+            let hasVoteChange = false;
+            if (!oldPoolsJson) {
+                hasVoteChange = true; // First time voting
+            } else {
+                try {
+                    const oldPools = JSON.parse(oldPoolsJson);
+                    const normalizedOld = normalizeVotes(oldPools);
+                    const normalizedNew = normalizeVotes(normalizedPools);
+                    hasVoteChange = JSON.stringify(normalizedOld) !== JSON.stringify(normalizedNew);
+                } catch (error) {
+                    console.warn(`Failed to parse old pools for address ${address}, treating as vote change:`, error);
+                    hasVoteChange = true; // Fallback to treating as change if parsing fails
+                }
+            }
+
+            let cooldownDuration: number | null = null;
             
             if (hasVoteChange) {
                 // Check vote cooldown only if there's an actual change
-                const [cooldownAllowed, cooldownError, cooldownDuration] = await checkVoteCooldown(db, address, newPoolsJson);
+                const [cooldownAllowed, cooldownError, duration] = await checkVoteCooldown(db, address, newPoolsJson);
+                cooldownDuration = duration;
                 if (!cooldownAllowed) {
                     console.error(`Vote cooldown active for address ${address}:`, cooldownError);
                     
@@ -886,16 +914,12 @@ const app = new Elysia()
                     return { success: false, error: sanitizeError(`DB error: ${dbErr}`, 'Database operation failed') };
                 }
 
-                // Record vote change for cooldown tracking only if there was an actual change
-                if (hasVoteChange && oldPoolsJson) {
-                    // Get the cooldown duration that was calculated during the check
-                    const [cooldownAllowed, cooldownError, cooldownDuration] = await checkVoteCooldown(db, address, newPoolsJson);
-                    if (cooldownDuration) {
-                        const [recorded, recordError] = await recordVoteChange(db, address, oldPoolsJson, newPoolsJson, cooldownDuration);
-                        if (!recorded) {
-                            console.warn(`Failed to record vote change for address ${address}:`, recordError);
-                            // Don't fail the entire operation if recording fails, just log it
-                        }
+                // Record vote change for cooldown tracking - always record when there's a change
+                if (hasVoteChange) {
+                    const [recorded, recordError] = await recordVoteChange(db, address, oldPoolsJson || 'FIRST_VOTE', newPoolsJson, cooldownDuration || 0);
+                    if (!recorded) {
+                        console.warn(`Failed to record vote change for address ${address}:`, recordError);
+                        // Don't fail the entire operation if recording fails, just log it
                     }
                 }
             } catch (error) {
