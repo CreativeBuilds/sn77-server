@@ -22,14 +22,14 @@ export const checkVoteCooldown = async (
         ) as any;
 
         if (!existingVote) {
-            // First time voting, no cooldown
-            return [true, null, null];
+            // First time voting, no cooldown before voting but will get cooldown after
+            return [true, null, VOTE_CHANGE_COOLDOWN_MS];
         }
 
         const oldPools = existingVote.pools;
         if (oldPools === newPools) {
-            // No change in votes, no cooldown
-            return [true, null, null];
+            // No change in votes, no cooldown but will get cooldown after
+            return [true, null, VOTE_CHANGE_COOLDOWN_MS];
         }
 
         // Check if user is currently in cooldown
