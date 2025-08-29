@@ -704,8 +704,7 @@ const app = new Elysia()
                         blockNumber: "block number when vote was submitted",
                         isActive: "always true for current vote"
                     }
-                },
-
+                }
             ]
         };
     })
@@ -857,28 +856,58 @@ const app = new Elysia()
             const oldPoolsJson = existingVote ? existingVote.pools : null;
             const newPoolsJson = JSON.stringify(normalizedPools);
             
-            // Normalize vote arrays for consistent comparison (sort by weight desc, then by address)
-            const normalizeVotes = (pools: { address: string, weight: number }[]) => {
-                return [...pools].sort((a, b) => {
-                    // First sort by weight descending (largest to smallest)
-                    if (b.weight !== a.weight) {
-                        return b.weight - a.weight;
-                    }
-                    // If weights are equal, sort by address for consistency
-                    return a.address.localeCompare(b.address);
-                });
-            };
-            
-            // Check if there's an actual change in votes (using normalized comparison)
+            // Check if there's an actual change in votes
             let hasVoteChange = false;
             if (!oldPoolsJson) {
                 hasVoteChange = true; // First time voting
+                console.log(`[DEBUG] First time voting for ${address}`);
             } else {
                 try {
                     const oldPools = JSON.parse(oldPoolsJson);
-                    const normalizedOld = normalizeVotes(oldPools);
-                    const normalizedNew = normalizeVotes(normalizedPools);
-                    hasVoteChange = JSON.stringify(normalizedOld) !== JSON.stringify(normalizedNew);
+                    
+                    // Simple but effective change detection: compare the actual vote configurations
+                    // Sort both arrays consistently for comparison
+                    const sortPools = (pools: { address: string, weight: number }[]) => {
+                        return [...pools].sort((a, b) => {
+                            // First sort by weight descending (largest to smallest)
+                            if (b.weight !== a.weight) return b.weight - a.weight;
+                            // If weights are equal, sort by address for consistency
+                            return a.address.localeCompare(b.address);
+                        });
+                    };
+                    
+                    const sortedOld = sortPools(oldPools);
+                    const sortedNew = sortPools(normalizedPools);
+                    
+                    // Compare the sorted arrays
+                    hasVoteChange = JSON.stringify(sortedOld) !== JSON.stringify(sortedNew);
+                    
+                    console.log(`[DEBUG] Vote change detection for ${address}:`);
+                    console.log(`[DEBUG] Old pools (sorted):`, JSON.stringify(sortedOld));
+                    console.log(`[DEBUG] New pools (sorted):`, JSON.stringify(sortedNew));
+                    console.log(`[DEBUG] Has vote change:`, hasVoteChange);
+                    
+                    // Additional logging for debugging
+                    if (hasVoteChange) {
+                        console.log(`[DEBUG] Vote change detected! Recording history for ${address}`);
+                        console.log(`[DEBUG] Old pools count: ${sortedOld.length}, New pools count: ${sortedNew.length}`);
+                        
+                        // Log specific differences
+                        if (sortedOld.length !== sortedNew.length) {
+                            console.log(`[DEBUG] Pool count changed from ${sortedOld.length} to ${sortedNew.length}`);
+                        }
+                        
+                        // Check for weight changes in same pools
+                        const oldMap = new Map(sortedOld.map(p => [p.address, p.weight]));
+                        const newMap = new Map(sortedNew.map(p => [p.address, p.weight]));
+                        
+                        for (const [poolAddress, newWeight] of newMap) {
+                            const oldWeight = oldMap.get(poolAddress);
+                            if (oldWeight !== newWeight) {
+                                console.log(`[DEBUG] Pool ${poolAddress} weight changed from ${oldWeight} to ${newWeight}`);
+                            }
+                        }
+                    }
                 } catch (error) {
                     console.warn(`Failed to parse old pools for address ${address}, treating as vote change:`, error);
                     hasVoteChange = true; // Fallback to treating as change if parsing fails
@@ -916,11 +945,21 @@ const app = new Elysia()
 
                 // Record vote change for cooldown tracking - always record when there's a change
                 if (hasVoteChange) {
+                    console.log(`[DEBUG] Recording vote change for ${address}:`);
+                    console.log(`[DEBUG] Old pools: ${oldPoolsJson || 'FIRST_VOTE'}`);
+                    console.log(`[DEBUG] New pools: ${newPoolsJson}`);
+                    console.log(`[DEBUG] Cooldown duration: ${cooldownDuration || 0}ms`);
+                    
                     const [recorded, recordError] = await recordVoteChange(db, address, oldPoolsJson || 'FIRST_VOTE', newPoolsJson, cooldownDuration || 0);
                     if (!recorded) {
-                        console.warn(`Failed to record vote change for address ${address}:`, recordError);
-                        // Don't fail the entire operation if recording fails, just log it
+                        console.error(`Failed to record vote change for address ${address}:`, recordError);
+                        // Don't fail the entire operation if recording fails, but log it as an error
+                        // This will help us debug why vote history isn't being recorded
+                    } else {
+                        console.log(`[DEBUG] Successfully recorded vote change for ${address}`);
                     }
+                } else {
+                    console.log(`[DEBUG] No vote change detected for ${address}, skipping history recording`);
                 }
             } catch (error) {
                 console.error(`Operation failed for address ${address}:`, error);
@@ -1608,6 +1647,7 @@ const app = new Elysia()
                 }
             }
         )
+
 
 
 // Initialize the server with cold-loaded data

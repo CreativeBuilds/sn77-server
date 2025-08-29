@@ -81,6 +81,11 @@ export const recordVoteChange = async (
     cooldownDuration: number
 ): Promise<[boolean, string | null]> => {
     try {
+        console.log(`[DEBUG] recordVoteChange called for ${ss58Address}`);
+        console.log(`[DEBUG] oldPools: ${oldPools}`);
+        console.log(`[DEBUG] newPools: ${newPools}`);
+        console.log(`[DEBUG] cooldownDuration: ${cooldownDuration}ms`);
+        
         const now = new Date();
         const cooldownUntil = new Date(now.getTime() + cooldownDuration);
 
@@ -99,19 +104,33 @@ export const recordVoteChange = async (
             // If more than 24 hours since last change, reset change count
             if (timeSinceLastChange > COOLDOWN_RESET_PERIOD_MS) {
                 changeCount = 1; // Reset to 1
+                console.log(`[DEBUG] Reset change count to 1 for ${ss58Address} (24h+ since last change)`);
             } else {
                 changeCount = currentRecord.change_count + 1;
+                console.log(`[DEBUG] Incremented change count to ${changeCount} for ${ss58Address}`);
             }
+        } else {
+            console.log(`[DEBUG] First vote change record for ${ss58Address}, change count = 1`);
         }
 
+        console.log(`[DEBUG] Inserting vote change record for ${ss58Address}:`);
+        console.log(`[DEBUG] - ss58Address: ${ss58Address}`);
+        console.log(`[DEBUG] - old_pools: ${oldPools}`);
+        console.log(`[DEBUG] - new_pools: ${newPools}`);
+        console.log(`[DEBUG] - change_timestamp: ${now.toISOString()}`);
+        console.log(`[DEBUG] - cooldown_until: ${cooldownUntil.toISOString()}`);
+        console.log(`[DEBUG] - change_count: ${changeCount}`);
+
         // Insert new change record
-        await db.run(
+        const result = await db.run(
             'INSERT INTO vote_change_history (ss58Address, old_pools, new_pools, change_timestamp, cooldown_until, change_count) VALUES (?, ?, ?, ?, ?, ?)',
             ss58Address, oldPools, newPools, now.toISOString(), cooldownUntil.toISOString(), changeCount
         );
-
+        
+        console.log(`[DEBUG] Vote change record inserted successfully for ${ss58Address}, result:`, result);
         return [true, null];
     } catch (error) {
+        console.error(`[ERROR] Failed to record vote change for ${ss58Address}:`, error);
         return [false, `Failed to record vote change: ${error}`];
     }
 };
