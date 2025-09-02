@@ -22,7 +22,8 @@ export const checkVoteCooldown = async (
         ) as any;
 
         if (!existingVote) {
-            // First time voting, no cooldown before voting but will get cooldown after
+            // First time voting, no cooldown before voting but will get base 72m cooldown after
+            // Next vote will be progressive (144m) if within 24h
             return [true, null, VOTE_CHANGE_COOLDOWN_MS];
         }
 
@@ -64,8 +65,8 @@ export const checkVoteCooldown = async (
             }
         }
 
-        // Calculate new cooldown duration
-        const cooldownDuration = calculateCooldownDuration(effectiveChangeCount);
+        // Calculate new cooldown duration based on what the count will be after this vote
+        const cooldownDuration = calculateCooldownDuration(effectiveChangeCount + 1);
         
         return [true, null, cooldownDuration];
     } catch (error) {
@@ -204,8 +205,8 @@ export const checkVoteCooldownStatus = async (
                 timeDisplay = `${remainingMinutes}m`;
             }
 
-            // Calculate what the next cooldown would be
-            const nextCooldownDuration = calculateCooldownDuration(cooldownRecord.change_count);
+            // Calculate what the next cooldown would be (based on what count will be after next vote)
+            const nextCooldownDuration = calculateCooldownDuration(cooldownRecord.change_count + 1);
             const nextCooldownMinutes = Math.ceil(nextCooldownDuration / (1000 * 60));
             const nextCooldownDisplay = nextCooldownMinutes >= 60 ? 
                 `${Math.floor(nextCooldownMinutes / 60)}h ${nextCooldownMinutes % 60}m` : 
@@ -223,8 +224,8 @@ export const checkVoteCooldownStatus = async (
             }, null];
         }
 
-        // Calculate what the next cooldown would be
-        const nextCooldownDuration = calculateCooldownDuration(cooldownRecord.change_count);
+        // Calculate what the next cooldown would be (based on what count will be after next vote)
+        const nextCooldownDuration = calculateCooldownDuration(cooldownRecord.change_count + 1);
         const nextCooldownMinutes = Math.ceil(nextCooldownDuration / (1000 * 60));
         const nextCooldownDisplay = nextCooldownMinutes >= 60 ? 
             `${Math.floor(nextCooldownMinutes / 60)}h ${nextCooldownMinutes % 60}m` : 
@@ -261,5 +262,5 @@ const calculateCooldownDuration = (changeCount: number): number => {
 const VOTE_CHANGE_COOLDOWN_MS = 72 * 60 * 1000; // 72 minutes base cooldown
 const PROGRESSIVE_COOLDOWN_MULTIPLIER = 2; // Double cooldown for each frequent change
 const MAX_COOLDOWN_MS = 8 * 60 * 60 * 1000; // Max 8 hours cooldown
-const FREQUENT_CHANGE_THRESHOLD = 3; // Changes within this threshold trigger progressive cooldown
+const FREQUENT_CHANGE_THRESHOLD = 2; // Changes within this threshold trigger progressive cooldown
 const COOLDOWN_RESET_PERIOD_MS = 24 * 60 * 60 * 1000; // 24 hours of inactivity resets change count 
