@@ -11,6 +11,10 @@ import { sanitizeError } from './utils/errorUtils';
 import { checkRateLimit, getClientIP } from './utils/rateLimitUtils';
 import { validateBasicInput, normalizeWeights } from './utils/validationUtils';
 import { verifySignature, verifyEthereumSignature } from './utils/signatureUtils';
+import {
+    initBlacklistTables, getRequestMeta, isBlacklisted, getBlacklistSets, getBlacklist, recordClaimAttempt,
+    recordVerifiedClaim, logFailedHotkeySignature,
+} from './utils/blacklistUtils';
 import { initializeHoldersCache, startPeriodicHoldersRefresh, stopPeriodicHoldersRefresh, getHolders } from './utils/holdersUtils';
 import { getAddressMapping, setAddressMapping, upsertUserVotes, getUserVotes, getPoolInfo, getAllPoolAddresses } from './utils/dbUtils';
 import { validateUniswapV3Pools } from './utils/poolValidationUtils';
@@ -133,6 +137,9 @@ try {
         )
     `); 
 } catch (_) { }
+
+// Claim audit log + blacklist tables (see utils/blacklistUtils.ts)
+try { await initBlacklistTables(db as any); } catch (e) { console.error('Failed to initialise blacklist tables:', e); }
 
 const BLOCK_WINDOW = 10; // max allowed difference between submitted and current chain block
 const VOTES_CACHE_TTL_MS = 30 * 1000; // refresh every 30s to reduce DB load when /allVotes is spammed
@@ -351,11 +358,14 @@ async function getMinerPositions(db: any): Promise<[Record<string, LiquidityPosi
     } else {
         const hotkeys = getSubnetHotkeys();
         const rows = await db.all('SELECT ss58Address, ethereumAddress FROM address_map');
+        // Blacklisted hotkeys and wallets get no positions, and therefore no weight
+        const blacklist = await getBlacklistSets(db as any);
         const minerAddresses: Record<string, string> = {};
         for (const row of rows) {
-            if (hotkeys.includes(row.ss58Address)) {
-                minerAddresses[row.ss58Address] = row.ethereumAddress;
-            }
+            if (!hotkeys.includes(row.ss58Address)) continue;
+            if (blacklist.hotkeys.has(row.ss58Address)) continue;
+            if (blacklist.eth.has(String(row.ethereumAddress).toLowerCase())) continue;
+            minerAddresses[row.ss58Address] = row.ethereumAddress;
         }
 
         const [pools, poolsErr] = await getAllPoolAddresses(db);
@@ -999,8 +1009,13 @@ const app = new Elysia()
             if (!subnetHotkeys.includes(address)) return { success: false, error: 'Invalid hotkey address' };
 
             const hotkey = address;
+            const claimMeta = getRequestMeta(request, (app as any).server?.requestIP?.(request)?.address);
             const verification = verifySignature(message, signature, hotkey);
-            if (!verification.success) return { success: false, error: sanitizeError(verification.error!, 'Authentication failed') };
+            if (!verification.success) {
+                // Rejected. Record who sent it and what it tried to do (log only, no penalty)
+                await logFailedHotkeySignature(db as any, { meta: claimMeta, hotkey, signature, message });
+                return { success: false, error: sanitizeError(verification.error!, 'Authentication failed') };
+            }
 
             const outer = message.split('|');
             if (outer.length !== 5) return { success: false, error: 'Invalid message format' };
@@ -1028,12 +1043,32 @@ const app = new Elysia()
             if (!subnetHotkeys.includes(hotkey)) return { success: false, error: 'Hotkey must be a registered miner in the subnet' };
 
             const ethSignerLower = ethSigner.toLowerCase();
+
+            // Both signatures are valid from here on. A wallet the subnet owner has blacklisted
+            // by hand cannot be mapped; the attempt is logged and nothing else happens.
+            if (await isBlacklisted(db as any, 'eth', ethSignerLower)) {
+                await recordClaimAttempt(db as any, {
+                    meta: claimMeta, hotkey, eth: ethSignerLower, hotkeySigOk: true, ethSigOk: true,
+                    outcome: 'rejected_blacklisted_wallet', signature, message,
+                });
+                return { success: false, error: 'Wallet is blacklisted' };
+            }
+            await recordVerifiedClaim(db as any, hotkey, ethSignerLower, claimMeta);
+
             const [existing, fetchErr] = await getAddressMapping(db, hotkey, ethSignerLower);
             if (fetchErr) return { success: false, error: sanitizeError(`DB error: ${fetchErr}`, 'Database operation failed') };
             if (existing && existing.ss58Address === hotkey && existing.ethereumAddress === ethSignerLower) return { success: true, message: 'Mapping already exists' };
 
+            const previousRow = await db.get('SELECT ethereumAddress FROM address_map WHERE ss58Address = ?', hotkey).catch(() => null) as any;
             const [inserted, mapErr] = await setAddressMapping(db, hotkey, ethSignerLower);
             if (mapErr) return { success: false, error: sanitizeError(`DB error: ${mapErr}`, 'Database operation failed') };
+
+            // Claim history: every change to a mapping is kept, with the wallet it replaced
+            await recordClaimAttempt(db as any, {
+                meta: claimMeta, hotkey, eth: ethSignerLower, hotkeySigOk: true, ethSigOk: true,
+                outcome: previousRow?.ethereumAddress ? 'mapping_updated' : 'mapping_created',
+                previousEth: previousRow?.ethereumAddress ?? null, signature, message,
+            });
 
             return { success: true, message: existing ? 'Address mapping updated' : 'Address mapping created' };
         },
@@ -1173,6 +1208,16 @@ const app = new Elysia()
 
             return { success: true, holders: getHolders(), cached: true };
         },
+    )
+    .get(
+        '/blacklist',
+        async ({ request }) => {
+            const clientIP = getClientIP(request);
+            const [ipAllowed, ipErr] = checkRateLimit(clientIP, ipRequestCounts, MAX_REQUESTS_PER_IP);
+            if (!ipAllowed) return { success: false, error: sanitizeError(ipErr!, 'Too many requests') };
+            const entries = await getBlacklist(db as any);
+            return { success: true, blacklist: entries, total: entries.length };
+        }
     )
     .get(
         '/allAddresses',
